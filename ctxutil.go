@@ -35,6 +35,8 @@ func GetTraceID(ctx context.Context) string {
 
 // ExtendTimeout creates a fresh context with the given timeout
 // and carries over known values from the original context.
+// It works both for adding a timeout to contexts without one
+// and for replacing/extending an existing timeout.
 func ExtendTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
 	newCtx, cancel := context.WithTimeout(context.Background(), timeout)
 	vals := getValues(ctx)
