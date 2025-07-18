@@ -64,6 +64,16 @@ func main() {
 }
 ```
 
+## Development
+
+### Testing
+
+This code uses the `synctest`.
+
+```shell
+GOEXPERIMENT=synctest go test -v -race -count=1 ./...
+```
+
 ## License
 
 MIT
