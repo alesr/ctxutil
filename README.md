@@ -1,4 +1,5 @@
 # ctxutil
+[![Go Report Card](https://goreportcard.com/badge/github.com/alesr/ctxutil)](https://goreportcard.com/report/github.com/alesr/ctxutil)
 
 A tiny Go package that makes working with `context.Context` values less painful.
 
