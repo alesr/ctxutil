@@ -1,0 +1,179 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+
+jobs:
+  setup:
+    name: Setup
+    runs-on: ubuntu-latest
+    outputs:
+      go-version: ${{ steps.go-version.outputs.version }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Determine Go version from go.mod
+        id: go-version
+        run: |
+          echo "version=$(grep -oP '^go \K\d+\.\d+(\.\d+)?' go.mod)" >> $GITHUB_OUTPUT
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    needs: setup
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ needs.setup.outputs.go-version }}
+          cache: true
+
+      - name: Go Format
+        run: |
+          # -s simplifies code, -d displays diff, -e reports all errors
+          gofmt_output=$(gofmt -s -d -e .)
+          if [ -n "$gofmt_output" ]; then
+            echo "Go code is not properly formatted:"
+            echo "$gofmt_output"
+            exit 1
+          fi
+
+      - name: Go Vet
+        run: |
+          GOEXPERIMENT=synctest go vet -all -printfuncs=Debugf,Infof,Warnf,Errorf,Logf,Fatalf ./...
+
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    needs: setup
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache: true
+
+      - name: Get dependencies
+        run: go mod download
+
+      - name: Run tests with synctest
+        run: GOEXPERIMENT=synctest go test -v -race -count=1 -timeout 5m ./...
+
+  coverage:
+    name: Test Coverage
+    runs-on: ubuntu-latest
+    needs: setup
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache: true
+
+      - name: Generate coverage report
+        run: GOEXPERIMENT=synctest go test -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.out
+          retention-days: 7
+
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          slug: alesr/ctxutil
+
+  verify-mod:
+    name: Verify Module
+    runs-on: ubuntu-latest
+    needs: setup
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ needs.setup.outputs.go-version }}
+          cache: true
+
+      - name: Verify go.mod
+        run: |
+          go mod tidy
+          # Check if go.mod or go.sum were modified by go mod tidy
+          if ! git diff --exit-code go.mod go.sum; then
+            echo "go.mod or go.sum needs to be updated. Run 'go mod tidy' locally and commit changes."
+            exit 1
+          fi
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    needs: setup
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ needs.setup.outputs.go-version }}
+          cache: true
+
+      - name: Build
+        run: go build -v ./...
+
+  sync:
+    name: Sync Status
+    runs-on: ubuntu-latest
+    needs: [lint, test, coverage, verify-mod, build]
+    if: always()
+    steps:
+      - name: Check previous job status
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const jobs = await github.rest.actions.listJobsForWorkflowRun({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: context.runId,
+            });
+
+            const dependentJobs = jobs.data.jobs.filter(job =>
+              ['lint', 'test', 'coverage', 'verify-mod', 'build'].includes(job.name.toLowerCase()));
+
+            const failedJobs = dependentJobs.filter(job => job.conclusion !== 'success');
+
+            if (failedJobs.length > 0) {
+              core.setFailed(`The following jobs have failed: ${failedJobs.map(job => job.name).join(', ')}`);
+              return;
+            }
+            console.log('All required jobs have completed successfully.');
+      - name: Set final status
+        run: echo "✅ CI pipeline completed successfully"
